@@ -50,17 +50,26 @@ _USERID_URL_TEMPLATE = 'https://www.fanfiction.net/u/%d'
 
 _DATE_COMPARISON = date(1970, 1, 1)
 
+_ATTRS = ['title', 'id', 'author', 'author_id', 'chapter_count', 'word_count', 'date_published', 
+        'date_updated', 'rated', 'complete', 'language', 'genre', 'characters', 'reviews']
+
 
 def _parse_string(regex, source):
     """Returns first group of matched regular expression as string."""
-    return re.search(regex, source).group(1).decode('utf-8')
+    try:
+        return re.search(regex, source).group(1).decode('utf-8')
+    except AttributeError:
+        return None
 
 
 def _parse_integer(regex, source):
     """Returns first group of matched regular expression as integer."""
-    match = re.search(regex, source).group(1)
-    match = match.replace(',', '')
-    return int(match)
+    try:
+        match = re.search(regex, source).group(1)
+        match = match.replace(',', '')
+        return int(match)
+    except AttributeError:
+        return 0
 
 
 def _parse_date(regex, source):
@@ -83,7 +92,7 @@ def _visible_filter(element):
     return True
 
 
-class Story(object):
+class StoryData(object):
     def __init__(self, url=None, id=None):
         """ A story on fanfiction.net
 
@@ -104,10 +113,10 @@ class Story(object):
             author (str):           The name of the author.
             rated (str):            The story rating.
             language (str):         The story language.
-            genre (str):            The genre(s) of the story.
-            characters (str):       The character(s) of the story.
+            genre (List(str)):      The genre(s) of the story.
+            characters (List(str)): The character(s) of the story.
             reviews (int):          The number of reviews of the story.
-            complete (bool):          True if the story is complete, else False.
+            complete (bool):        True if the story is complete, else False.
         """
 
         if url is None:
@@ -116,7 +125,10 @@ class Story(object):
             else:
                 url = _STORY_URL_TEMPLATE % int(id)
 
-        source = opener(url).read()
+        url = url.encode('utf-8')
+
+        source = urllib2.unquote(opener(url).read())
+
         # Easily parsable and directly contained in the JavaScript, lets hope
         # that doesn't change or it turns into something like below
         self.id = _parse_integer(_STORYID_REGEX, source)
@@ -131,7 +143,10 @@ class Story(object):
         self.author_id = _parse_integer(_USERID_REGEX, source)
         self.title = _unescape_javascript_string(_parse_string(_TITLE_REGEX, source).replace('+', ' '))
         self.date_published = _parse_date(_DATEP_REGEX, source)
+        self.date_updated = self.date_published
         self.author = _unescape_javascript_string(_parse_string(_AUTHOR_REGEX, source))
+        self.genre = []
+        self.characters = []
 
         # Tokens of information that aren't directly contained in the
         # JavaScript, need to manually parse and filter those
@@ -148,23 +163,23 @@ class Story(object):
 
         # Check if tokens[2] contains the genre
         if tokens[2] in _GENRES or '/' in tokens[2] and all(token in _GENRES for token in tokens[2].split('/')):
-            self.genre = tokens[2]
+            self.genre = tokens[2].split('/')
             # tokens[2] contained the genre, check if next token contains the
             # characters
             if not any(tokens[3].startswith(terminator) for terminator in token_terminators):
-                self.characters = tokens[3]
+                self.characters = tokens[3].split(',')
             else:
                 # No characters token
-                self.characters = ''
+                self.characters = []
         elif any(tokens[2].startswith(terminator) for terminator in token_terminators):
             # No genre and/or character was specified
-            self.genre = ''
-            self.characters = ''
+            self.genre = []
+            self.characters = []
             # tokens[2] must contain the characters since it wasn't a genre
             # (check first clause) but isn't either of "Reviews: ", "Updated: "
             # or "Published: " (check previous clause)
         else:
-            self.characters = tokens[2]
+            self.characters = tokens[2].split(',')
 
         for token in tokens:
             if token.startswith('Reviews: '):
@@ -200,14 +215,13 @@ class Story(object):
         """
         return User(id=self.author_id)
 
-    def print_info(self, attrs=['title', 'id', 'author', 'author_id', 'chapter_count', 'word_count', 'date_published',
-                                'date_updated', 'rated', 'complete', 'language', 'genre', 'characters', 'reviews']):
+    def print_info(self):
         """
         Print information held about the story.
         :param attrs: A list of attribute names to print information for.
         :return: void
         """
-        for attr in attrs:
+        for attr in _ATTRS:
             print "%12s\t%s" % (attr, getattr(self, attr))
 
     def download(self, output='', message=True, ext=''):
@@ -217,6 +231,8 @@ class Story(object):
     # a normal property if no manual opener is to be specified.
     chapters = property(get_chapters)
 
+    def __str__(self):
+        return "\n".join(("%12s\t%s" % (attr, getattr(self, attr))) for attr in _ATTRS)
 
 class Chapter(object):
     def __init__(self, url=None, story_id=None, chapter=None):
@@ -243,7 +259,7 @@ class Chapter(object):
                 print 'Both a stroy id and chapter number must be provided'
             elif story_id and chapter:
                 url = _CHAPTER_URL_TEMPLATE % (story_id, chapter)
-
+        url = url.encode('utf-8')
         source = opener(url).read()
         self.story_id = _parse_integer(_STORYID_REGEX, source)
         self.number = _parse_integer(_CHAPTER_REGEX, source)
@@ -287,7 +303,9 @@ class User(object):
         else:
             self.userid = _parse_integer(_USERID_URL_EXTRACT, url)
 
-        source = opener(url).read()
+        url = url.encode('utf-8')
+
+        source = urllib2.unquote(opener(url).read())
         self._soup = bs4.BeautifulSoup(source, 'lxml')
         self.url = url
         self.username = _parse_string(_USERNAME_REGEX, source)
@@ -297,6 +315,7 @@ class User(object):
             self.favourite_author_count = _parse_integer(_USER_FAVOURITE_AUTHOR_COUNT_REGEX, source)
         except AttributeError:
             self.favourite_author_count = None
+
     def get_stories(self):
         """
         Get the stories written by this author.
@@ -307,22 +326,34 @@ class User(object):
         entries = xml_soup.findAll('link', attrs={'rel': 'alternate'})
         for entry in entries:
             story_url = entry.get('href')
-            yield Story(story_url)
+            yield StoryData(story_url)
 
-    def get_favourite_stories(self):
+    def get_story_ids(self):
+        xml_page_source = opener(root + '/atom/u/%d/' % self.userid).read()
+        xml_soup = bs4.BeautifulSoup(xml_page_source, 'lxml')
+        entries = xml_soup.findAll('link', attrs={'rel': 'alternate'})
+        return map(lambda entry: entry.get('href').split('/')[-3], entries)
+
+    def get_favorite_stories(self):
         """
-        Get the favourite stories of this author.
-        :return: A Story generator for the favourite stories for this author.
+        Get the favorite stories of this author.
+        :return: A Story generator for the favorite stories for this author.
         """
-        favourite_stories = self._soup.findAll('div', {'class': 'favstories'})
-        for story in favourite_stories:
+        favorite_stories = self._soup.findAll('div', {'class': 'favstories'})
+        for story in favorite_stories:
             link = story.find('a', {'class': 'stitle'}).get('href')
+            #story_id = int(link.split('/')[2])
+            
             link = root + link
-            yield Story(link)
+            yield StoryData(link)
 
-    def get_favourite_authors(self):
+    def get_favorite_story_ids(self):
+        favorite_stories = self._soup.findAll('div', {'class': 'favstories'})
+        return map(lambda story: int(story.find('a', {'class': 'stitle'}).get('href').split('/')[2]), favorite_stories)
+
+    def get_favorite_authors(self):
         """
-        :return: User generator for the favourite authors of this user.
+        :return: User generator for the favorite authors of this user.
         """
         tables = self._soup.findAll('table')
         table = tables[-1]
@@ -331,3 +362,12 @@ class User(object):
             author_url = author_tag.get('href')
             author_url = root + author_url
             yield User(author_url)
+
+    def get_favorite_author_ids(self):
+        tables = self._soup.findAll('table')
+        table = tables[-1]
+        author_tags = table.findAll('a', href=re.compile(r".*/u/(\d+)/.*"))
+        return map(lambda author_tag: int(author_tag.get('href').split('/')[-2]), author_tags)
+
+    def __str__(self):
+        return "username: " + self.username + ", id: " + str(self.userid)
